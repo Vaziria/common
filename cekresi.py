@@ -1,76 +1,27 @@
-import gevent
-from pprint import pprint
-import json
-from requests import Session
+from gevent import monkey
 import os
-import csv
+
+os.environ['logfile'] = 'logs/resi'
+
+if __name__ == '__main__':
+	monkey.patch_all()
+
+import gevent
+from gevent.pool import Pool
+
+import random
+import time
+
+from app.config import _config
+from app.worker import Worker
+from app.report import Report
 
 
-cek = not os.path.exists('hasil_resi.csv')
+from vazutils.logger import Logger
+	
+logger = Logger(__name__)
 
-csvfile = open('hasil_resi.csv', 'a+', newline='')
-fieldnames = ['resi', 'status', 'tanggal']
-writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-if cek:
-	writer.writeheader()
-
-
-class Worker:
-	session = None
-
-	def __init__(self):
-		self.session = Session()
-
-	def get_home():
-		
-		url = 'https://www.cekpengiriman.com/'
-
-		headers = {
-			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36",
-			"Origin": "https://www.cekpengiriman.com",
-
-
-		}
-
-		req = self.session.get(url, headers = headers)
-
-		return req.status_code == 200
-
-
-
-def req_resi(resi):
-
-	url = 'https://www.cekpengiriman.com/wp-content/themes/resiongkir/data/data.php'
-
-	headers = {
-		"X-Requested-With": "XMLHttpRequest",
-		"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36",
-		"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-		"Origin": "https://www.cekpengiriman.com",
-		"Sec-Fetch-Site": "same-origin",
-		"Sec-Fetch-Mode": "cors",
-		"Sec-Fetch-Dest": "empty",
-		"Referer": "https://www.cekpengiriman.com/",
-
-
-	}
-
-	payload = {
-		"nomor": resi,
-		"kurir": "ninja",
-		"type": "waybill"
-	}
-
-	req = _session.post(url, headers = headers, data = payload)
-
-	if req.status_code == 200:
-		return json.loads(req.text)
-
-	print(req.status_code)
-
-	return False
-
+_report = Report()
 
 
 
@@ -85,40 +36,76 @@ def get_data(path):
 
 	return hasil
 
-def parse_data(data):
 
-	result = data['rajaongkir']['result']
-	last = result['manifest'][-1]
-	return {
-		'tanggal': result['delivery_status']['pod_date'],
-		'status': result['delivery_status']['status']
-	}
-	
-	
+def create_worker(num):
+	hasil = []
+
+	for c in range(0, num):
+		worker = Worker(c)
+		
+		worker.get_home()
+
+		hasil.append(worker)
+
+	return hasil
 
 
-def write_csv(data):
-	
-	writer.writerow(data)
+def cek_resi(worker, resi):
+	data = worker.req_resi(resi)
+	data = worker.parse_data(data)
+	data['resi'] = resi
 
+	_report.write(data)
+	logger.info(' {} checked'.format(resi) )
 
 def run():
-	get_home()
+
+	workers = create_worker(_config.get('count_worker', 4))
 
 	for resi in get_data('resi.txt'):
-		print('print checking {}'.format(resi))
 		try:
-			data = req_resi(resi)
-			data = parse_data(data)
+			worker = random.choice(workers)
+
+			yield {
+				"func": cek_resi,
+				"param": [ worker, resi ]
+			}
+
 		except Exception as e:
-			print(e)
+			logger.error(e, exc_info=True)
+
+
+
+def run_gevent():
+
+	worker = _config.get('count_worker', 4)
+	pool = Pool(worker)
+
+	funcs = run()
+
+	while True:
+		
+
+		if pool.full():
+			time.sleep(1)
 			continue
 
-		data['resi'] = resi
+		# getting func delete
+		try:
+			funcnya = next(funcs)
+			pool.spawn(funcnya['func'], *funcnya['param'])
+		
+		except StopIteration as e:
+			
+			if pool.free_count() == worker:
+				break
 
-		write_csv(data)
 
 
+		time.sleep(0.01)
+
+
+		# gevent.wait()
 
 
 
@@ -126,4 +113,4 @@ def run():
 if __name__ == '__main__':
 	from pprint import pprint
 
-	run()
+	run_gevent()
