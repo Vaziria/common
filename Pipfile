@@ -5,6 +5,9 @@ name = "pypi"
 
 [packages]
 selenium = "*"
+requests = "*"
+lxml = "*"
+requests-toolbelt = "*"
 
 [dev-packages]
 
